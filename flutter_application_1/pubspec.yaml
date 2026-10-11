@@ -1,0 +1,44 @@
+name: flutter_application_1
+description: "A new Flutter project."
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.10.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  lottie: ^2.7.0
+  shared_preferences: ^2.2.2
+  google_fonts: ^6.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter:
+  uses-material-design: true
+  
+  assets:
+    - assets/backgrounds/
+    - assets/plants/monstera/
+    - assets/plants/orchid/
+    - assets/plants/violet/
+    - assets/animations/
+    - assets/images/
+    - assets/images/achievements/
+    - assets/images/fertilizers/   
+flutter_launcher_icons:
+  image_path: "assets/icon.png"
+  android: true
+  ios: true
+  web:
+    generate: true
+    image_path: "assets/icon.png"
+    background_color: "#1A2A1A"
+    theme_color: "#4CAF50"
+    google_fonts: ^6.1.0
