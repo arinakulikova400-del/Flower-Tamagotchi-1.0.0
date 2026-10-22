@@ -1,0 +1,2792 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:lottie/lottie.dart';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'services/api_service.dart';
+import 'widgets/flower_details.dart';
+import 'widgets/flower_selector.dart';
+import 'widgets/daily_login_dialog.dart';
+import 'widgets/pot_selector.dart';
+import 'screens/login_screen.dart';
+import 'models/fertilizer.dart';
+import 'widgets/fertilizer_shop.dart';
+import 'widgets/shop_button.dart';
+import 'widgets/coin_counter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() {
+  runApp(const MainApp());
+}
+
+class MainApp extends StatelessWidget {
+  const MainApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Цветочный Тамагочи',
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        primaryColor: Colors.green,
+        scaffoldBackgroundColor: const Color(0xFF1A2A1A),
+      ),
+      home: const GardenScreen(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class GardenScreen extends StatefulWidget {
+  const GardenScreen({super.key});
+
+  @override
+  State<GardenScreen> createState() => _GardenScreenState();
+}
+
+class _GardenScreenState extends State<GardenScreen> {
+  final String baseUrl = "http://192.168.0.15:8000";
+  String _token = '';
+  bool _showLottie = false;
+  bool _showJoyLottie = false;
+  bool _showImage = false;
+  int _coins = 0;
+  bool _showFertilizerShop = false;
+
+  Map<String, dynamic>? _flower;
+  Map<String, dynamic>? _flowerType;
+  Map<String, dynamic>? _flowerPot;
+  int _needWaterCount = 0;
+  bool _isLoading = true;
+  bool _isAuthenticated = false;
+  bool _showFlowerSelector = false;
+  bool _showLoginDialog = true;
+  bool _showProfileDialog = false;
+
+  String? _fertilizerNotification;
+  String? _fertilizerImagePath;
+  bool _showFertilizerNotification = false;
+
+    // Ежедневный вход
+  int _dailyStreak = 0;
+  int _dailyReward = 0;
+  bool _showDailyLoginDialog = false;
+
+  List<dynamic> _flowerTypes = [];
+  List<dynamic> _pots = [];
+
+  String _profileUsername = '';
+  String _profileEmail = '';
+
+  List<Achievement> _achievements = [];
+  int _completedAchievements = 0;
+  int _unclaimedAchievements = 0;
+
+  Achievement? _notificationAchievement;
+  bool _showAchievementNotification = false;
+
+  late ApiService _apiService;
+  Timer? _bgTimer;
+  Timer? _updateTimer;
+  bool _isUpdatingFlower = false;
+
+  String _pluralRaz(int n) {
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return 'раз';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'раза';
+    return 'раз';
+  }
+
+  final GlobalKey _coinCounterKey = GlobalKey();
+
+  // ==================== ТАПЫ ====================
+  void _onSingleTap() {
+    setState(() {
+      _showLottie = true;
+      _showJoyLottie = true;
+    });
+
+    Future.delayed(const Duration(seconds: 5), () {
+      if (mounted) {
+        setState(() {
+          _showLottie = false;
+          _showJoyLottie = false;
+        });
+      }
+    });
+  }
+
+  void _onDoubleTap() {
+    setState(() {
+      _showLottie = true;
+      _showImage = true;
+    });
+
+    Future.delayed(const Duration(seconds: 5), () {
+      if (mounted) {
+        setState(() {
+          _showLottie = false;
+          _showImage = false;
+        });
+      }
+    });
+  }
+
+  // ==================== АНИМАЦИЯ МОНЕТКИ ====================
+  void _animateCoinFromFlower() {
+    final overlay = Overlay.of(context);
+    final counterBox =
+        _coinCounterKey.currentContext?.findRenderObject() as RenderBox?;
+    if (counterBox == null) return;
+
+    final counterPos = counterBox.localToGlobal(Offset.zero);
+    final counterCenter = counterPos +
+        Offset(counterBox.size.width / 2, counterBox.size.height / 2);
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final startPos = Offset(screenWidth * 0.5, screenHeight * 0.55);
+
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (context) => _FlyingCoin(
+        start: startPos,
+        end: counterCenter,
+        onDone: () {
+          if (entry.mounted) entry.remove();
+        },
+      ),
+    );
+    overlay.insert(entry);
+  }
+
+  // ==================== ПОКУПКА УДОБРЕНИЯ ====================
+  Future<void> _buyFertilizer(Fertilizer fert) async {
+    if (_coins < fert.price) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Недостаточно монет!'),
+            backgroundColor: Color.fromARGB(255, 184, 69, 60)),
+      );
+      return;
+    }
+
+    final result = await _apiService.buyFertilizer(fert.id, fert.price);
+
+    if (result['success'] == true) {
+      setState(() {
+        _coins = result['coins'] ?? _coins;
+        _showFertilizerShop = false;
+        _fertilizerNotification = '${fert.name} использовано';
+
+        switch (fert.id) {
+          case 'basic':
+            _fertilizerImagePath = 'assets/images/fertilizers/flo_1.png';
+            break;
+          case 'advanced':
+            _fertilizerImagePath = 'assets/images/fertilizers/flo2_2.png';
+            break;
+          case 'premium':
+            _fertilizerImagePath = 'assets/images/fertilizers/flo3_3.png';
+            break;
+          default:
+            _fertilizerImagePath = 'assets/images/fertilizers/flo_1.png';
+        }
+
+        _showFertilizerNotification = true;
+      });
+
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) {
+          setState(() {
+            _showFertilizerNotification = false;
+          });
+        }
+      });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result['error'] ?? 'Ошибка покупки'),
+          backgroundColor: const Color.fromARGB(255, 184, 69, 60),
+        ),
+      );
+    }
+  }
+
+  // ==================== МОНЕТЫ (локально, кэш) ====================
+  Future<void> _saveCoins() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('coins', _coins);
+  }
+
+  Future<void> _loadCoins() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getInt('coins');
+    if (saved != null && mounted) {
+      setState(() => _coins = saved);
+    }
+  }
+
+  // ==================== ДОСТИЖЕНИЯ (через сервер) ====================
+
+  /// Загружает достижения с сервера
+  Future<void> _loadAchievements() async {
+    if (_token.isEmpty) return;
+    try {
+      final data = await _apiService.getAchievements();
+      setState(() {
+        _achievements =
+            data.map((json) => Achievement.fromServer(json)).toList();
+      });
+      _updateCompletedCount();
+    } catch (e) {
+      debugPrint('❌ Ошибка загрузки достижений: $e');
+    }
+  }
+
+  /// Обновляет достижения с сервера (вызывать после действий)
+  Future<void> _refreshAchievements() async {
+    await _loadAchievements();
+  }
+
+  void _updateCompletedCount() {
+    int completed = 0;
+    int unclaimed = 0;
+    for (var a in _achievements) {
+      if (a.isCompleted) completed++;
+      if (a.isCompleted && !a.isClaimed) unclaimed++;
+    }
+    _completedAchievements = completed;
+    _unclaimedAchievements = unclaimed;
+  }
+
+  Future<void> _claimAchievement(Achievement achievement) async {
+    if (!achievement.isCompleted || achievement.isClaimed) return;
+
+    final result = await _apiService.claimAchievement(achievement.id);
+
+    if (result['success'] == true) {
+      setState(() {
+        achievement.isClaimed = true;
+        _coins = result['coins'] ?? _coins;
+      });
+      _updateCompletedCount();
+      await _loadUserProfile();
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result['error'] ?? 'Ошибка'),
+            backgroundColor: const Color.fromARGB(255, 184, 69, 60),
+          ),
+        );
+      }
+    }
+  }
+
+  void _showAchievementToast(Achievement achievement) {
+    if (!mounted) return;
+    setState(() {
+      _notificationAchievement = achievement;
+      _showAchievementNotification = true;
+    });
+
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _showAchievementNotification = false);
+    });
+  }
+
+  Widget _buildCoinBadge(Achievement achievement) {
+    final bool claimed = achievement.isClaimed;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: claimed
+            ? const Color.fromARGB(255, 247, 151, 61)
+            : const Color(0xFFBDBDBD),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Image.asset(
+            'assets/images/achievements/coins.png',
+            width: 16,
+            height: 16,
+            errorBuilder: (_, __, ___) => const Icon(
+              Icons.monetization_on,
+              size: 16,
+              color: Colors.amber,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            '${achievement.reward}',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: claimed ? Colors.white : const Color(0xFF616161),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showAchievementsDialog() async {
+    await _refreshAchievements();
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) {
+          return Container(
+            height: MediaQuery.of(context).size.height * 0.8,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(30),
+                topRight: Radius.circular(30),
+              ),
+            ),
+            child: Column(
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: const BoxDecoration(
+                    color: Color.fromARGB(255, 221, 159, 67),
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(30),
+                      topRight: Radius.circular(30),
+                    ),
+                  ),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Image.asset(
+                              'assets/images/icons8.png',
+                              width: 28,
+                              height: 28,
+                              errorBuilder: (context, error, stackTrace) {
+                                return const Icon(Icons.emoji_events,
+                                    color: Colors.white, size: 28);
+                              },
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '$_completedAchievements/${_achievements.length}',
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Text(
+                        'Достижения',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _achievements.length,
+                    itemBuilder: (context, index) {
+                      final achievement = _achievements[index];
+                      final bool isClaimed =
+                          achievement.isCompleted && achievement.isClaimed;
+
+                      return GestureDetector(
+                        onTap: () async {
+                          if (achievement.isCompleted &&
+                              !achievement.isClaimed) {
+                            await _claimAchievement(achievement);
+                            setModalState(() {});
+                          }
+                        },
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            Container(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: isClaimed
+                                    ? Colors.green.withOpacity(0.1)
+                                    : Colors.grey.withOpacity(0.05),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: isClaimed
+                                      ? Colors.green
+                                      : Colors.grey.withOpacity(0.3),
+                                ),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  SizedBox(
+                                    width: 50,
+                                    height: 50,
+                                    child: Image.asset(
+                                      achievement.imagePath,
+                                      width: 50,
+                                      height: 50,
+                                      fit: BoxFit.contain,
+                                      errorBuilder:
+                                          (context, error, stackTrace) {
+                                        return Icon(
+                                          Icons.emoji_events,
+                                          size: 28,
+                                          color: isClaimed
+                                              ? Colors.orange
+                                              : Colors.grey,
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.center,
+                                      children: [
+                                        Text(
+                                          achievement.title,
+                                          style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                            color: isClaimed
+                                                ? Colors.green[800]
+                                                : Colors.black87,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          achievement.description,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey[600],
+                                          ),
+                                          textAlign: TextAlign.left,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        LeafProgressBar(
+                                          current: achievement.currentValue,
+                                          total: achievement.requiredValue,
+                                          leafCount: 7,
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          '${achievement.currentValue}/${achievement.requiredValue}',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.grey[500],
+                                          ),
+                                          textAlign: TextAlign.left,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (isClaimed)
+                                    const Icon(Icons.check_circle,
+                                        color: Colors.green, size: 28)
+                                  else if (achievement.isCompleted)
+                                    Icon(Icons.check_circle,
+                                        color: Colors.grey[400], size: 28),
+                                ],
+                              ),
+                            ),
+                            Positioned(
+                              top: 6,
+                              right: 6,
+                              child: _buildCoinBadge(achievement),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+
+    _apiService = ApiService(baseUrl, _token);
+    _initData();
+    _loadCoins();
+
+    _bgTimer = Timer.periodic(const Duration(hours: 1), (timer) {
+      if (mounted && _isAuthenticated) {
+        _refreshAchievements();
+      }
+    });
+
+    _updateTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
+      if (mounted && _flower != null && _isAuthenticated) {
+        _updateFlowerState();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _bgTimer?.cancel();
+    _updateTimer?.cancel();
+    super.dispose();
+  }
+
+  String _getBackgroundImage() {
+    final now = DateTime.now();
+    final hour = now.hour;
+
+    if (hour >= 4 && hour < 17) return 'assets/backgrounds/room.jpeg';
+    if (hour >= 17 && hour < 19) return 'assets/backgrounds/room2.jpeg';
+    return 'assets/backgrounds/room3.jpeg';
+  }
+
+  Future<void> _initData() async {
+    await _loadFlowerTypes();
+    await _loadPots();
+    await _checkAuth();
+  }
+
+  Future<void> _checkAuth() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedToken = prefs.getString('auth_token');
+
+    if (savedToken != null && savedToken.isNotEmpty) {
+      _token = savedToken;
+      _apiService = ApiService(baseUrl, _token);
+      setState(() {
+        _isAuthenticated = true;
+        _showLoginDialog = false;
+      });
+      await _loadData();
+      await _loadUserProfile();
+      await _loadAchievements();
+      await _checkDailyLogin();
+    } else {
+      setState(() {
+        _showLoginDialog = true;
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _checkDailyLogin() async {
+    if (_token.isEmpty) return;
+
+    try {
+      final uri = Uri.parse("$baseUrl/api/daily-login/");
+      final res = await http.post(
+        uri,
+        headers: {
+          'Authorization': 'Token $_token',
+          'Content-Type': 'application/json',
+        },
+      );
+
+      print('📡 Daily login статус: ${res.statusCode}');
+      print('📡 Daily login ответ: ${res.body}');
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+
+        setState(() {
+          _dailyStreak = data['streak'] ?? 1;
+          _dailyReward = data['reward'] ?? 1;
+          _showDailyLoginDialog = true;
+        });
+      }
+    } catch (e) {
+      print('❌ Ошибка daily login: $e');
+    }
+  }
+
+  Future<void> _loadUserProfile() async {
+    if (_token.isEmpty) return;
+
+    try {
+      final uri = Uri.parse("$baseUrl/api/profile/");
+      final res = await http.get(
+        uri,
+        headers: {
+          'Authorization': 'Token $_token',
+          'Content-Type': 'application/json',
+        },
+      );
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+
+        if (data is List && data.isNotEmpty) {
+          final userData = data[0];
+          setState(() {
+            _profileUsername =
+                userData['username']?.toString() ?? 'Пользователь';
+            _profileEmail = userData['email']?.toString() ?? 'email не указан';
+            _coins = userData['coins'] ?? _coins;
+          });
+        } else if (data is Map) {
+          setState(() {
+            _profileUsername = data['username']?.toString() ?? 'Пользователь';
+            _profileEmail = data['email']?.toString() ?? 'email не указан';
+            _coins = data['coins'] ?? _coins;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Ошибка загрузки профиля: $e');
+      setState(() {
+        _profileUsername = 'Пользователь';
+        _profileEmail = 'email не указан';
+      });
+    }
+  }
+
+  Future<void> _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('auth_token');
+
+    setState(() {
+      _showProfileDialog = false;
+      _isAuthenticated = false;
+      _showLoginDialog = true;
+      _flower = null;
+      _flowerType = null;
+      _flowerPot = null;
+      _profileUsername = '';
+      _profileEmail = '';
+      _achievements = [];
+    });
+  }
+
+  Future<void> _loadFlowerTypes() async {
+    final types = await _apiService.loadFlowerTypes();
+    setState(() => _flowerTypes = types);
+  }
+
+  Future<void> _loadPots() async {
+    final pots = await _apiService.loadPots();
+    setState(() => _pots = pots);
+  }
+
+  Future<void> _updateFlowerState() async {
+    if (_flower == null || _isUpdatingFlower) return;
+    _isUpdatingFlower = true;
+    try {
+      await _apiService.updateFlowerState(_flower!['id']);
+      await _loadData();
+      await _refreshAchievements();
+    } catch (e) {
+      debugPrint('Ошибка обновления состояния: $e');
+    } finally {
+      _isUpdatingFlower = false;
+    }
+  }
+
+  void _calculateNeedWater() {
+    if (_flower == null) {
+      _needWaterCount = 0;
+      return;
+    }
+
+    final waterLevel = _flower!['water_level'] ?? 0;
+
+    if (waterLevel > 90) {
+      _needWaterCount = 0;
+    } else if (waterLevel > 70) {
+      _needWaterCount = 1;
+    } else if (waterLevel > 50) {
+      _needWaterCount = 2;
+    } else if (waterLevel > 30) {
+      _needWaterCount = 3;
+    } else if (waterLevel > 10) {
+      _needWaterCount = 4;
+    } else {
+      _needWaterCount = 5;
+    }
+  }
+
+  Duration? _getRepotCooldown() {
+    if (_flower == null) return null;
+    final lastRepot = _flower!['last_repot_at'];
+    if (lastRepot == null) return null;
+
+    final last = DateTime.tryParse(lastRepot.toString());
+    if (last == null) return null;
+
+    final next = last.add(const Duration(days: 2));
+    final now = DateTime.now();
+    if (now.isAfter(next)) return null;
+    return next.difference(now);
+  }
+
+  String _formatCooldown(Duration d) {
+    final days = d.inDays;
+    final hours = d.inHours % 24;
+    final minutes = d.inMinutes % 60;
+    if (days > 0) return 'Через $days д $hours ч';
+    if (hours > 0) return 'Через $hours ч $minutes мин';
+    return 'Через $minutes мин';
+  }
+
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+    try {
+      final flowers = await _apiService.loadFlowers();
+
+      if (flowers.isNotEmpty) {
+        final flowerData = flowers.first;
+        final flowerTypeId = flowerData['flower_type'];
+
+        Map<String, dynamic>? foundType;
+        for (var type in _flowerTypes) {
+          if (type['id'] == flowerTypeId) {
+            foundType = type;
+            break;
+          }
+        }
+
+        final potId = flowerData['pot'];
+        Map<String, dynamic>? foundPot;
+        for (var pot in _pots) {
+          if (pot['id'] == potId) {
+            foundPot = pot;
+            break;
+          }
+        }
+
+        setState(() {
+          _flower = flowerData;
+          _flowerType = foundType;
+          _flowerPot = foundPot;
+        });
+
+        _calculateNeedWater();
+      } else {
+        setState(() {
+          _flower = null;
+          _flowerType = null;
+          _flowerPot = null;
+          _needWaterCount = 0;
+        });
+      }
+      setState(() => _isLoading = false);
+    } catch (e) {
+      debugPrint('❌ Ошибка: $e');
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _waterFlower() async {
+    if (_flower == null) return;
+
+    final currentWaterLevel = _flower!['water_level'] ?? 0;
+    if (currentWaterLevel >= 100) return;
+
+    final success = await _apiService.waterFlower(_flower!['id']);
+    if (success) {
+      _animateCoinFromFlower();
+
+      await _loadData();
+      await _loadUserProfile();
+      await _refreshAchievements();
+    }
+  }
+
+  Future<void> _repotFlower(int newPotId) async {
+    if (_flower == null) return;
+
+    final result = await _apiService.repotFlower(_flower!['id'], newPotId);
+
+    if (result['success'] == true) {
+      if (mounted) {
+        setState(() {
+          _coins = result['coins'] ?? _coins;
+        });
+        _saveCoins();
+        _animateCoinFromFlower();
+      }
+      await _loadData();
+      await _loadUserProfile();
+      await _refreshAchievements();
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result['message'] ?? 'Ошибка пересадки'),
+            backgroundColor: const Color.fromARGB(255, 184, 69, 60),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _deleteFlower() async {
+    if (_flower == null) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить цветок?',
+            style: TextStyle(color: Colors.black)),
+        content: const Text('Вы уверены, что хотите удалить этот цветок?',
+            style: TextStyle(color: Colors.black)),
+        backgroundColor: Colors.white,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            style: TextButton.styleFrom(
+                backgroundColor: Colors.green, foregroundColor: Colors.white),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(
+                backgroundColor: Colors.purple, foregroundColor: Colors.white),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      final success = await _apiService.deleteFlower(_flower!['id']);
+      if (success) {
+        await _loadData();
+        await _refreshAchievements();
+      }
+    }
+  }
+
+  void _showCreateFlower(int flowerTypeId) async {
+    setState(() => _showFlowerSelector = false);
+
+    final potId = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => PotSelector(
+        baseUrl: baseUrl,
+        pots: _pots,
+        selectedPotId: null,
+        onPotSelected: (id) => Navigator.pop(context, id),
+        onCancel: () => Navigator.pop(context, null),
+      ),
+    );
+
+    if (potId != null) {
+      setState(() => _isLoading = true);
+      final success =
+          await _apiService.createFlower(flowerTypeId, potId, 'Мой цветок');
+      if (success) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        await _loadData();
+        await _refreshAchievements();
+      }
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _showPotSelectorForRepot() async {
+    if (_flower == null) return;
+
+    final newPotId = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _RepotSheet(
+        baseUrl: baseUrl,
+        pots: _pots,
+        currentPotId: _flowerPot?['id'],
+        getCooldown: _getRepotCooldown,
+        formatCooldown: _formatCooldown,
+      ),
+    );
+
+    if (newPotId != null) {
+      await _repotFlower(newPotId);
+    }
+  }
+
+  // ==================== ОТОБРАЖЕНИЕ ====================
+  String _getStageFileName(String stage, String flowerType) {
+    final isAlive = _flower?['is_alive'] ?? true;
+    if (!isAlive) {
+      if (flowerType == 'monstera') return 'wilted_mon6.png';
+      if (flowerType == 'orchid') return 'wilted_or6.png';
+      return 'wilted_wi6.png';
+    }
+
+    switch (stage) {
+      case 'seed':
+        return '1.png';
+      case 'sprout':
+        if (flowerType == 'monstera') return 'mon2.png';
+        if (flowerType == 'orchid') return 'or2.png';
+        return 'wi2.png';
+      case 'growing':
+        if (flowerType == 'monstera') return 'mon3.png';
+        if (flowerType == 'orchid') return 'or3.png';
+        return 'wi3.png';
+      case 'mature':
+        if (flowerType == 'monstera') return 'mon4.png';
+        if (flowerType == 'orchid') return 'or4.png';
+        return 'wi4.png';
+      case 'flowering':
+        if (flowerType == 'monstera') return 'mon5.png';
+        if (flowerType == 'orchid') return 'or5.png';
+        return 'wi5.png';
+      default:
+        return '1.png';
+    }
+  }
+
+  String _getDisplayFlowerName() {
+    if (_flowerType == null) return 'Цветок';
+    final type = _flowerType!['type'] ?? 'violet';
+    switch (type) {
+      case 'violet':
+        return 'Фиалка';
+      case 'orchid':
+        return 'Орхидея';
+      case 'monstera':
+        return 'Монстера';
+      default:
+        return 'Цветок';
+    }
+  }
+
+  String _getDisplayFlowerType() {
+    if (_flowerType == null) return '';
+    final type = _flowerType!['type'] ?? 'violet';
+    switch (type) {
+      case 'violet':
+        return 'Сенполия';
+      case 'orchid':
+        return 'Фаленопсис';
+      case 'monstera':
+        return 'Деликатесная';
+      default:
+        return '';
+    }
+  }
+
+  String _getFlowerDisplayName(String? type) {
+    switch (type) {
+      case 'violet':
+        return 'Фиалка';
+      case 'orchid':
+        return 'Орхидея';
+      case 'monstera':
+        return 'Монстера';
+      default:
+        return 'Цветок';
+    }
+  }
+
+  double _getHealthProgress() {
+    return (_flower?['health'] ?? 0).toDouble() / 100;
+  }
+
+  double _getWaterProgress() {
+    return (_flower?['water_level'] ?? 0).toDouble() / 100;
+  }
+
+  double _getGrowthProgress() {
+    if (_flower == null || _flowerType == null) return 0;
+    final maxHeight = _flowerType!['max_height'] ?? 100;
+    final currentHeight = (_flower!['height'] ?? 0).toDouble();
+    if (maxHeight <= 0) return 0;
+    double progress = currentHeight / maxHeight;
+    return progress.clamp(0.0, 1.0);
+  }
+
+  double _getBottomOffset(String stage, String flowerType) {
+    final isAlive = _isFlowerAlive;
+
+    if (!isAlive) {
+      if (flowerType == 'monstera') return 110;
+      if (flowerType == 'orchid') return 30;
+      return 50;
+    }
+
+    if (flowerType == 'monstera') {
+      switch (stage) {
+        case 'seed':
+          return 10;
+        case 'sprout':
+          return 50;
+        case 'growing':
+          return 50;
+        case 'mature':
+          return 70;
+        case 'flowering':
+          return 100;
+        default:
+          return 60;
+      }
+    } else if (flowerType == 'orchid') {
+      switch (stage) {
+        case 'seed':
+          return 10;
+        case 'sprout':
+          return 30;
+        case 'growing':
+          return 40;
+        case 'mature':
+          return 50;
+        case 'flowering':
+          return 50;
+        default:
+          return 50;
+      }
+    } else {
+      switch (stage) {
+        case 'seed':
+          return 10;
+        case 'sprout':
+          return 40;
+        case 'growing':
+          return 40;
+        case 'mature':
+          return 38;
+        case 'flowering':
+          return 50;
+        default:
+          return 50;
+      }
+    }
+  }
+
+  bool get _isFlowerAlive => _flower?['is_alive'] ?? true;
+
+  Widget _buildPlantImage() {
+    if (_flower == null) return const SizedBox();
+
+    final flowerType = _flowerType?['type'] ?? 'violet';
+    final stage = _flower!['stage'] ?? 'seed';
+    final pot = _flowerPot;
+    final isAlive = _isFlowerAlive;
+
+    final bool hasPot = pot != null && pot['image'] != null;
+
+    String potImageUrl = '';
+    if (hasPot) {
+      potImageUrl = pot!['image'];
+      if (potImageUrl.isNotEmpty && !potImageUrl.startsWith('http')) {
+        potImageUrl = '$baseUrl$potImageUrl';
+      }
+    }
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final isPhone = screenWidth < 600;
+    final containerSize = screenWidth * 0.8;
+    final potWidth = screenWidth * 0.65;
+    final potHeight = potWidth * 0.7;
+    final plantSize = screenWidth * 0.45;
+    final scaleFactor = screenHeight / 800;
+
+    return GestureDetector(
+      onTap: _onSingleTap,
+      onDoubleTap: _onDoubleTap,
+      child: Stack(
+        children: [
+          SizedBox(
+            width: containerSize,
+            height: containerSize,
+            child: Stack(
+              alignment: Alignment.bottomCenter,
+              children: [
+                if (hasPot)
+                  Positioned(
+                    bottom: screenHeight * 0.00001,
+                    child: Image.network(
+                      potImageUrl,
+                      width: potWidth,
+                      height: potHeight,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => Container(
+                        width: potWidth,
+                        height: potHeight,
+                        decoration: BoxDecoration(
+                          color: Colors.brown.withOpacity(0.5),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.grass,
+                            color: Colors.brown, size: 40),
+                      ),
+                    ),
+                  )
+                else
+                  Positioned(
+                    bottom: screenHeight * 0.02,
+                    child: Container(
+                      width: potWidth,
+                      height: potHeight,
+                      decoration: BoxDecoration(
+                        color: Colors.brown.withOpacity(0.5),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.grass,
+                          color: Colors.brown, size: 40),
+                    ),
+                  ),
+                Positioned(
+                  bottom: isAlive
+                      ? _getBottomOffset(stage, flowerType) * scaleFactor
+                      : screenHeight * 0.03,
+                  child: Image.asset(
+                    'assets/plants/$flowerType/${_getStageFileName(stage, flowerType)}',
+                    width: plantSize,
+                    height: plantSize,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => Icon(
+                      Icons.local_florist,
+                      size: plantSize * 0.8,
+                      color: Colors.grey,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_showLottie)
+            Positioned(
+              top: screenHeight * 0.275,
+              left: screenWidth * 0.335,
+              child: Lottie.asset(
+                'assets/animations/eyes.json',
+                width: 75,
+                height: 75,
+                repeat: false,
+              ),
+            ),
+          if (_showJoyLottie)
+            Positioned(
+              top: isPhone ? screenHeight * 0.25 : screenHeight * 0.27,
+              left: isPhone ? screenWidth * 0.22 : screenWidth * 0.25,
+              child: Lottie.asset(
+                'assets/animations/confetti.json',
+                width: isPhone ? screenWidth * 0.1 : screenWidth * 0.08,
+                height: isPhone ? screenWidth * 0.1 : screenWidth * 0.08,
+                repeat: false,
+              ),
+            ),
+          if (_showImage)
+            Positioned(
+              top: isPhone ? screenHeight * 0.25 : screenHeight * 0.27,
+              left: isPhone ? screenWidth * 0.22 : screenWidth * 0.25,
+              child: Image.asset(
+                'assets/images/anger.png',
+                width: isPhone ? screenWidth * 0.16 : screenWidth * 0.12,
+                height: isPhone ? screenWidth * 0.16 : screenWidth * 0.12,
+                fit: BoxFit.contain,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProgressBar(double value, Color color, String label) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 400;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: isSmallScreen ? 10 : 12,
+                  color: Colors.black,
+                  fontWeight: FontWeight.w500,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${(value * 100).toInt()}%',
+              style: TextStyle(
+                fontSize: isSmallScreen ? 12 : 15,
+                color: Colors.black,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        LinearProgressIndicator(
+          value: value,
+          backgroundColor: color.withOpacity(0.2),
+          color: color,
+          minHeight: isSmallScreen ? 6 : 8,
+          borderRadius: BorderRadius.circular(4),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSelectorOverlay() {
+    return Stack(
+      children: [
+        Container(
+          color: Colors.black.withOpacity(0.7),
+          child: GestureDetector(
+            onTap: () => setState(() => _showFlowerSelector = false),
+          ),
+        ),
+        Center(
+          child: Container(
+            margin: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(20),
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.8,
+              maxWidth: 500,
+            ),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Выберите цветок',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Flexible(
+                  child: GridView.builder(
+                    shrinkWrap: true,
+                    physics: const BouncingScrollPhysics(),
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: 0.65,
+                    ),
+                    itemCount: _flowerTypes.length,
+                    itemBuilder: (context, index) {
+                      final type = _flowerTypes[index];
+                      final String flowerType = type['type'];
+                      final String flowerName =
+                          _getFlowerDisplayName(flowerType);
+                      final String description =
+                          (type['description'] ?? '').toString();
+
+                      String imagePath;
+                      switch (flowerType) {
+                        case 'violet':
+                          imagePath = 'assets/plants/violet/wi5.png';
+                          break;
+                        case 'orchid':
+                          imagePath = 'assets/plants/orchid/or5.png';
+                          break;
+                        case 'monstera':
+                          imagePath = 'assets/plants/monstera/mon5.png';
+                          break;
+                        default:
+                          imagePath = 'assets/plants/violet/wi5.png';
+                      }
+
+                      return GestureDetector(
+                        onTap: () => _showCreateFlower(type['id']),
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.green.withOpacity(0.08),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: Colors.green.withOpacity(0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Container(
+                                width: 110,
+                                height: 110,
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Image.asset(
+                                    imagePath,
+                                    fit: BoxFit.contain,
+                                    errorBuilder:
+                                        (context, error, stackTrace) {
+                                      return const Icon(
+                                        Icons.local_florist,
+                                        size: 40,
+                                        color: Colors.green,
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                flowerName,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color.fromARGB(255, 2, 1, 1),
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 4),
+                              if (description.isNotEmpty)
+                                Flexible(
+                                  child: SingleChildScrollView(
+                                    physics:
+                                        const BouncingScrollPhysics(),
+                                    child: Text(
+                                      description,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: const Color.fromARGB(
+                                            255, 44, 44, 44),
+                                        height: 1.3,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: () =>
+                      setState(() => _showFlowerSelector = false),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 40, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                  ),
+                  child: const Text('Отмена'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isAlive = _isFlowerAlive;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    return Scaffold(
+      body: Stack(
+        children: [
+          Container(
+            decoration: BoxDecoration(
+              image: DecorationImage(
+                image: AssetImage(_getBackgroundImage()),
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+          SafeArea(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : !_isAuthenticated
+                    ? const SizedBox()
+                    : Column(
+                        children: [
+                          Container(
+                            margin: const EdgeInsets.all(12),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.6),
+                              borderRadius: BorderRadius.circular(30),
+                            ),
+                            child: Row(
+                              mainAxisAlignment:
+                                  MainAxisAlignment.spaceBetween,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue.withOpacity(0.3),
+                                    borderRadius: BorderRadius.circular(30),
+                                    border: Border.all(
+                                        color: Colors.blue, width: 2),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.water_drop,
+                                          color: Colors.blue, size: 20),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Полив: $_needWaterCount ${_pluralRaz(_needWaterCount)}',
+                                        style: const TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Row(
+                                  children: [
+                                    CoinCounter(
+                                      key: _coinCounterKey,
+                                      coins: _coins,
+                                      onTap: () => setState(
+                                          () => _showFertilizerShop = true),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    GestureDetector(
+                                      onTap: _showAchievementsDialog,
+                                      child: Container(
+                                        width: 44,
+                                        height: 44,
+                                        margin:
+                                            const EdgeInsets.only(right: 8),
+                                        decoration: BoxDecoration(
+                                          color: Color.fromARGB(
+                                              255, 247, 151, 61),
+                                          borderRadius:
+                                              BorderRadius.circular(22),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.black
+                                                  .withOpacity(0.2),
+                                              blurRadius: 4,
+                                              offset: const Offset(0, 2),
+                                            ),
+                                          ],
+                                        ),
+                                        child: Stack(
+                                          children: [
+                                            Center(
+                                              child: Image.asset(
+                                                'assets/images/icons8.png',
+                                                width: 28,
+                                                height: 28,
+                                                errorBuilder: (context, error,
+                                                    stackTrace) {
+                                                  return const Icon(
+                                                      Icons.emoji_events,
+                                                      color: Colors.white,
+                                                      size: 28);
+                                                },
+                                              ),
+                                            ),
+                                            if (_unclaimedAchievements > 0)
+                                              Positioned(
+                                                right: 0,
+                                                top: 0,
+                                                child: Container(
+                                                  padding:
+                                                      const EdgeInsets.all(2),
+                                                  decoration:
+                                                      const BoxDecoration(
+                                                    color: Colors.red,
+                                                    shape: BoxShape.circle,
+                                                  ),
+                                                  constraints:
+                                                      const BoxConstraints(
+                                                    minWidth: 14,
+                                                    minHeight: 14,
+                                                  ),
+                                                  child: Text(
+                                                    '$_unclaimedAchievements',
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 8,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                    ),
+                                                    textAlign: TextAlign.center,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    GestureDetector(
+                                      onTap: () {
+                                        setState(() {
+                                          _showProfileDialog = true;
+                                        });
+                                      },
+                                      child: Container(
+                                        width: 44,
+                                        height: 44,
+                                        decoration: BoxDecoration(
+                                          color: const Color.fromARGB(
+                                              255, 56, 103, 58),
+                                          borderRadius:
+                                              BorderRadius.circular(22),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.black
+                                                  .withOpacity(0.2),
+                                              blurRadius: 4,
+                                              offset: const Offset(0, 2),
+                                            ),
+                                          ],
+                                        ),
+                                        child: const Icon(Icons.person,
+                                            color: Colors.white, size: 28),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            child: _flower == null
+                                ? Center(
+                                    child: GestureDetector(
+                                      onTap: () => setState(
+                                          () => _showFlowerSelector = true),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 32, vertical: 20),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFF5E6D3),
+                                          borderRadius:
+                                              BorderRadius.circular(60),
+                                        ),
+                                        child: const Text(
+                                          '🌱 У вас пока нет цветов 🌱\n\nНажмите, чтобы посадить первый цветок!',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.w500,
+                                            color: Color(0xFF5D3A1A),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  )
+                                : Stack(
+                                    children: [
+                                      Positioned(
+                                        top: screenHeight * 0.05,
+                                        left: screenWidth * 0.1,
+                                        child: _buildPlantImage(),
+                                      ),
+                                      Positioned(
+                                        bottom: 2,
+                                        left: 0,
+                                        right: 0,
+                                        child: Center(
+                                          child: Container(
+                                            width: screenWidth * 0.95,
+                                            padding: const EdgeInsets.all(16),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white
+                                                  .withOpacity(0.6),
+                                              borderRadius:
+                                                  BorderRadius.circular(30),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.black
+                                                      .withOpacity(0.08),
+                                                  blurRadius: 10,
+                                                  offset: const Offset(0, 4),
+                                                ),
+                                              ],
+                                            ),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Center(
+                                                  child: Text(
+                                                    _getDisplayFlowerName(),
+                                                    style: const TextStyle(
+                                                        fontSize: 22,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                        color: Colors.black),
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Center(
+                                                  child: Text(
+                                                    _getDisplayFlowerType(),
+                                                    style: const TextStyle(
+                                                        fontSize: 16,
+                                                        fontWeight:
+                                                            FontWeight.w500,
+                                                        color: Colors.black87),
+                                                  ),
+                                                ),
+                                                if (!isAlive)
+                                                  Container(
+                                                    margin:
+                                                        const EdgeInsets.only(
+                                                            top: 8),
+                                                    padding: const EdgeInsets
+                                                        .symmetric(
+                                                        horizontal: 12,
+                                                        vertical: 6),
+                                                    decoration: BoxDecoration(
+                                                      color: const Color
+                                                              .fromARGB(204,
+                                                              170, 65, 57)
+                                                          .withOpacity(0.2),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                              20),
+                                                    ),
+                                                    child: const Text(
+                                                      'Цветок погиб',
+                                                      style: TextStyle(
+                                                          color: Color.fromARGB(
+                                                              255, 0, 0, 0),
+                                                          fontWeight:
+                                                              FontWeight.bold),
+                                                    ),
+                                                  ),
+                                                const SizedBox(height: 20),
+                                                Row(
+                                                  children: [
+                                                    Expanded(
+                                                      child: _buildProgressBar(
+                                                        _getHealthProgress(),
+                                                        const Color.fromARGB(
+                                                            255, 201, 63, 53),
+                                                        'Уровень здоровья',
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 20),
+                                                    Expanded(
+                                                      child: _buildProgressBar(
+                                                        _getWaterProgress(),
+                                                        const Color.fromARGB(
+                                                            255, 46, 140, 218),
+                                                        'Уровень воды',
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 16),
+                                                Center(
+                                                  child: _buildProgressBar(
+                                                    _getGrowthProgress(),
+                                                    const Color.fromARGB(
+                                                        255, 70, 155, 73),
+                                                    'Уровень роста',
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 20),
+                                                SizedBox(
+                                                  width: double.infinity,
+                                                  child:
+                                                      ElevatedButton.icon(
+                                                    onPressed: (!isAlive ||
+                                                            (_flower?[
+                                                                        'water_level'] ??
+                                                                    0) >=
+                                                                100)
+                                                        ? null
+                                                        : _waterFlower,
+                                                    icon: const Icon(
+                                                        Icons.water_drop,
+                                                        color: Colors.blue),
+                                                    label: Text(
+                                                      'Полить',
+                                                      style: TextStyle(
+                                                        fontSize: 16,
+                                                        color: (!isAlive ||
+                                                                (_flower?[
+                                                                            'water_level'] ??
+                                                                        0) >=
+                                                                    100)
+                                                            ? Colors.grey
+                                                            : Colors.black,
+                                                      ),
+                                                    ),
+                                                    style: ElevatedButton
+                                                        .styleFrom(
+                                                      backgroundColor:
+                                                          Colors.white,
+                                                      foregroundColor:
+                                                          Colors.black,
+                                                      padding: const EdgeInsets
+                                                          .symmetric(
+                                                          vertical: 14),
+                                                      shape:
+                                                          RoundedRectangleBorder(
+                                                        borderRadius:
+                                                            BorderRadius
+                                                                .circular(30),
+                                                        side: BorderSide(
+                                                          color: (!isAlive ||
+                                                                  (_flower?[
+                                                                              'water_level'] ??
+                                                                          0) >=
+                                                                      100)
+                                                              ? Colors.grey
+                                                              : Colors.blue,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        ],
+                      ),
+          ),
+          if (_showFlowerSelector && _flowerTypes.isNotEmpty)
+            _buildSelectorOverlay(),
+          if (_showLoginDialog)
+            LoginDialog(
+              onLogin: (username, password) async {
+                final url = Uri.parse('$baseUrl/api/login/');
+                final response = await http.post(
+                  url,
+                  headers: {'Content-Type': 'application/json'},
+                  body: jsonEncode({
+                    'username': username,
+                    'password': password,
+                  }),
+                );
+
+                if (response.statusCode == 200) {
+                  final data = jsonDecode(response.body);
+                  final token = data['token'] ?? data['key'];
+
+                  if (token != null) {
+                    _token = token;
+                    _apiService = ApiService(baseUrl, _token);
+
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setString('auth_token', token);
+
+                    if (mounted) {
+                      setState(() {
+                        _showLoginDialog = false;
+                        _isAuthenticated = true;
+                      });
+                      await _loadData();
+                      await _loadUserProfile();
+                      await _loadAchievements();
+                      await _checkDailyLogin();
+                    }
+                    return true;
+                  }
+                }
+
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content: Text('Ошибка входа'),
+                        backgroundColor: Color.fromARGB(255, 142, 62, 57)),
+                  );
+                }
+                return false;
+              },
+              onRegister: (username, email, password) async {
+                final registerUrl = Uri.parse('$baseUrl/api/register/');
+                final registerResponse = await http.post(
+                  registerUrl,
+                  headers: {'Content-Type': 'application/json'},
+                  body: jsonEncode({
+                    'username': username,
+                    'email': email,
+                    'password': password,
+                  }),
+                );
+
+                if (registerResponse.statusCode == 201 ||
+                    registerResponse.statusCode == 200) {
+                  final loginUrl = Uri.parse('$baseUrl/api/login/');
+                  final loginResponse = await http.post(
+                    loginUrl,
+                    headers: {'Content-Type': 'application/json'},
+                    body: jsonEncode({
+                      'username': username,
+                      'password': password,
+                    }),
+                  );
+
+                  if (loginResponse.statusCode == 200) {
+                    final data = jsonDecode(loginResponse.body);
+                    final token = data['token'] ?? data['key'];
+
+                    if (token != null) {
+                      _token = token;
+                      _apiService = ApiService(baseUrl, _token);
+
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.setString('auth_token', token);
+
+                      if (mounted) {
+                        setState(() {
+                          _showLoginDialog = false;
+                          _isAuthenticated = true;
+                        });
+                        await _loadData();
+                        await _loadUserProfile();
+                        await _loadAchievements();
+                        await _checkDailyLogin();
+                      }
+                      return true;
+                    }
+                  }
+                }
+
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content: Text('Ошибка регистрации'),
+                        backgroundColor: Color.fromARGB(255, 142, 62, 57)),
+                  );
+                }
+                return false;
+              },
+            ),
+          if (_showProfileDialog)
+            Stack(
+              children: [
+                Container(
+                  color: Colors.black.withOpacity(0.7),
+                  child: GestureDetector(
+                    onTap: () => setState(() => _showProfileDialog = false),
+                  ),
+                ),
+                Center(
+                  child: Container(
+                    margin: const EdgeInsets.all(30),
+                    padding: const EdgeInsets.all(25),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.95),
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.person,
+                            size: 60, color: Color.fromARGB(255, 49, 105, 51)),
+                        const SizedBox(height: 16),
+                        Text(
+                          _profileUsername,
+                          style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF5D3A1A)),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _profileEmail,
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.grey),
+                        ),
+                        const SizedBox(height: 24),
+                        const SizedBox(height: 12),
+                        ElevatedButton(
+                          onPressed: _logout,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor:
+                                const Color.fromARGB(255, 163, 62, 55),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 30, vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(30),
+                            ),
+                          ),
+                          child: const Text('Выйти',
+                              style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white)),
+                        ),
+                        const SizedBox(height: 12),
+                        TextButton(
+                          onPressed: () =>
+                              setState(() => _showProfileDialog = false),
+                          child: const Text('Закрыть'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          if (_showFertilizerShop)
+            Stack(
+              children: [
+                Container(
+                  color: Colors.black.withOpacity(0.7),
+                  child: GestureDetector(
+                    onTap: () =>
+                        setState(() => _showFertilizerShop = false),
+                  ),
+                ),
+                Center(
+                  child: FertilizerShop(
+                    userCoins: _coins,
+                    onBuy: _buyFertilizer,
+                    onCancel: () =>
+                        setState(() => _showFertilizerShop = false),
+                  ),
+                ),
+              ],
+            ),
+
+          // ==================== ЕЖЕДНЕВНЫЙ ВХОД ====================
+          if (_showDailyLoginDialog)
+            DailyLoginDialog(
+              streak: _dailyStreak,
+              reward: _dailyReward,
+              onClaim: () async {
+                setState(() {
+                  _showDailyLoginDialog = false;
+                });
+                await _loadUserProfile();
+              },
+            ),
+
+          // ==================== УВЕДОМЛЕНИЯ ====================
+          if (_showFertilizerNotification && _fertilizerNotification != null)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 90,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: AnimatedOpacity(
+                  opacity: _showFertilizerNotification ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 300),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.25),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: ClipPath(
+                      clipper: _ChamferedClipper(cut: 14),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 14),
+                        color: const Color.fromARGB(180, 96, 110, 97),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_fertilizerImagePath != null)
+                              SizedBox(
+                                width: 40,
+                                height: 40,
+                                child: Image.asset(
+                                  _fertilizerImagePath!,
+                                  fit: BoxFit.contain,
+                                  errorBuilder:
+                                      (context, error, stackTrace) {
+                                    return const Icon(Icons.eco,
+                                        color: Colors.white, size: 26);
+                                  },
+                                ),
+                              )
+                            else
+                              const Icon(Icons.eco,
+                                  color: Colors.white, size: 26),
+                            const SizedBox(width: 10),
+                            Text(
+                              _fertilizerNotification!,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          if (_showAchievementNotification && _notificationAchievement != null)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 90,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: AnimatedOpacity(
+                  opacity: _showAchievementNotification ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 300),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.25),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: ClipPath(
+                      clipper: _ChamferedClipper(cut: 14),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 12),
+                        color: const Color.fromARGB(180, 96, 110, 97),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 36,
+                              height: 36,
+                              child: Image.asset(
+                                _notificationAchievement!.imagePath,
+                                fit: BoxFit.contain,
+                                errorBuilder: (context, error, stackTrace) {
+                                  return const Icon(
+                                    Icons.emoji_events,
+                                    color: Color.fromARGB(255, 255, 200, 100),
+                                    size: 30,
+                                  );
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Text(
+                              _notificationAchievement!.title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+      floatingActionButton: _flower != null &&
+              _isAuthenticated &&
+              !_showFertilizerShop &&
+              !_showDailyLoginDialog
+          ? Padding(
+              padding: const EdgeInsets.only(left: 30, right: 10, bottom: 400),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  ShopButton(
+                    onTap: () => setState(() => _showFertilizerShop = true),
+                    size: 55,
+                  ),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      SizedBox(
+                        width: 55,
+                        height: 55,
+                        child: FloatingActionButton(
+                          onPressed: _showPotSelectorForRepot,
+                          backgroundColor: Colors.brown,
+                          heroTag: 'repot',
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: const Icon(Icons.grass, size: 28),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: 55,
+                        height: 55,
+                        child: FloatingActionButton(
+                          onPressed: _deleteFlower,
+                          backgroundColor: const Color(0xFF5D3A1A),
+                          heroTag: 'delete',
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: const Icon(Icons.delete, size: 28),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            )
+          : null,
+    );
+  }
+}
+
+// ==================== КЛАСС ДОСТИЖЕНИЯ ====================
+enum AchievementType { flower, water, collection, growth }
+
+class Achievement {
+  final String id;
+  final String title;
+  final String description;
+  final String imagePath;
+  final int requiredValue;
+  final int reward;
+  int currentValue;
+  bool isCompleted;
+  bool isClaimed;
+  final AchievementType type;
+
+  Achievement({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.imagePath,
+    required this.requiredValue,
+    required this.reward,
+    required this.currentValue,
+    required this.type,
+    this.isCompleted = false,
+    this.isClaimed = false,
+  });
+
+  /// Справочник: id → метаданные (title, description, image, required, type).
+  /// reward приходит с сервера, поэтому здесь только клиентские поля.
+  static const Map<String, Map<String, dynamic>> CATALOG = {
+    'first_flower': {
+      'title': 'Первый цветок',
+      'description': 'Посадите первый цветок',
+      'imagePath': 'assets/images/achievements/blossom.png',
+      'requiredValue': 1,
+      'type': AchievementType.flower,
+    },
+    'water_10': {
+      'title': 'Заботливый садовод',
+      'description': 'Полейте цветок 10 раз',
+      'imagePath': 'assets/images/achievements/watering1.png',
+      'requiredValue': 10,
+      'type': AchievementType.water,
+    },
+    'water_50': {
+      'title': 'Мастер полива',
+      'description': 'Полейте цветок 50 раз',
+      'imagePath': 'assets/images/achievements/watering2.png',
+      'requiredValue': 50,
+      'type': AchievementType.water,
+    },
+    'violet_grow': {
+      'title': 'Коллекционер фиалок',
+      'description': 'Вырастите фиалку',
+      'imagePath': 'assets/images/achievements/violet.png',
+      'requiredValue': 1,
+      'type': AchievementType.collection,
+    },
+    'orchid_grow': {
+      'title': 'Коллекционер орхидей',
+      'description': 'Вырастите орхидею',
+      'imagePath': 'assets/images/achievements/orchid.png',
+      'requiredValue': 1,
+      'type': AchievementType.collection,
+    },
+    'monstera_grow': {
+      'title': 'Коллекционер монстер',
+      'description': 'Вырастите монстеру',
+      'imagePath': 'assets/images/achievements/monster.png',
+      'requiredValue': 1,
+      'type': AchievementType.collection,
+    },
+    'growth_10': {
+      'title': 'Первые сантиметры',
+      'description': 'Вырастите цветок до 10 см',
+      'imagePath': 'assets/images/achievements/ruler.png',
+      'requiredValue': 10,
+      'type': AchievementType.growth,
+    },
+    'flowering': {
+      'title': 'Первое цветение',
+      'description': 'Дождитесь цветения',
+      'imagePath': 'assets/images/achievements/blossom.png',
+      'requiredValue': 1,
+      'type': AchievementType.growth,
+    },
+  };
+
+  /// Создать Achievement из ответа сервера `/api/achievements/`
+  factory Achievement.fromServer(Map<String, dynamic> json) {
+    final id = json['id'] as String;
+    final meta = CATALOG[id] ?? {};
+
+    return Achievement(
+      id: id,
+      title: meta['title'] ?? id,
+      description: meta['description'] ?? '',
+      imagePath:
+          meta['imagePath'] ?? 'assets/images/achievements/blossom.png',
+      requiredValue: meta['requiredValue'] ?? 1,
+      reward: json['reward'] ?? 0,
+      currentValue: json['current_value'] ?? 0,
+      isCompleted: json['is_completed'] ?? false,
+      isClaimed: json['is_claimed'] ?? false,
+      type: meta['type'] ?? AchievementType.flower,
+    );
+  }
+}
+
+// ==================== КЛИПЕР СО СКОШЕННЫМИ УГЛАМИ ====================
+class _ChamferedClipper extends CustomClipper<Path> {
+  final double cut;
+  _ChamferedClipper({this.cut = 14});
+
+  @override
+  Path getClip(Size size) {
+    final w = size.width;
+    final h = size.height;
+    final c = cut;
+    return Path()
+      ..moveTo(c, 0)
+      ..lineTo(w - c, 0)
+      ..lineTo(w, c)
+      ..lineTo(w, h - c)
+      ..lineTo(w - c, h)
+      ..lineTo(c, h)
+      ..lineTo(0, h - c)
+      ..lineTo(0, c)
+      ..close();
+  }
+
+  @override
+  bool shouldReclip(covariant CustomClipper<Path> oldClipper) => false;
+}
+
+// ==================== ЛИАНА С ЛИСТОЧКАМИ ====================
+class LeafProgressBar extends StatelessWidget {
+  final int current;
+  final int total;
+  final int leafCount;
+
+  const LeafProgressBar({
+    super.key,
+    required this.current,
+    required this.total,
+    this.leafCount = 7,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final double progress =
+        total == 0 ? 0.0 : (current / total).clamp(0.0, 1.0);
+    return SizedBox(
+      height: 34,
+      child: CustomPaint(
+        painter: _LeafPainter(
+          progress: progress,
+          leafCount: leafCount,
+        ),
+        child: const SizedBox.expand(),
+      ),
+    );
+  }
+}
+
+class _LeafPainter extends CustomPainter {
+  final double progress;
+  final int leafCount;
+
+  _LeafPainter({
+    required this.progress,
+    required this.leafCount,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double w = size.width;
+    final double h = size.height;
+    final double centerY = h / 2;
+
+    // 1. Серая подложка
+    final bgLinePaint = Paint()
+      ..color = const Color(0xFFDDDDDD)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawLine(Offset(0, centerY), Offset(w, centerY), bgLinePaint);
+
+    // 2. Оранжевый прогресс
+    final progressPaint = Paint()
+      ..color = const Color(0xFFFF9800)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawLine(
+      Offset(0, centerY),
+      Offset(w * progress, centerY),
+      progressPaint,
+    );
+
+    // 3. Лиана
+    final vinePaint = Paint()
+      ..color = const Color(0xFF2E4A2E)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round;
+
+    final vinePath = Path();
+    final double amplitude = 6;
+    final double step = leafCount > 1 ? w / (leafCount - 1) : w;
+    final double halfWave = step;
+
+    vinePath.moveTo(0, centerY - amplitude);
+    double x = 0;
+    bool up = false;
+    while (x < w) {
+      x += halfWave;
+      if (x > w) x = w;
+      final midX = x - halfWave / 2;
+      if (midX > 0) {
+        vinePath.quadraticBezierTo(
+          midX,
+          up ? centerY + amplitude * 2 : centerY - amplitude * 2,
+          x,
+          up ? centerY + amplitude : centerY - amplitude,
+        );
+      } else {
+        vinePath.lineTo(x, up ? centerY + amplitude : centerY - amplitude);
+      }
+      up = !up;
+    }
+
+    canvas.drawPath(vinePath, vinePaint);
+
+    // 4. Листочки
+    for (int i = 0; i < leafCount; i++) {
+      final double leafX = i * step;
+      final double leafY = centerY + (i % 2 == 0 ? -amplitude : amplitude);
+
+      final bool filled = (leafCount > 1)
+          ? (i / (leafCount - 1)) <= progress + 0.0001
+          : progress >= 1.0;
+
+      final leafPaint = Paint()
+        ..color = filled ? const Color(0xFF4CAF50) : const Color(0xFF9E9E9E)
+        ..style = PaintingStyle.fill;
+
+      canvas.save();
+      canvas.translate(leafX, leafY);
+      canvas.rotate(i % 2 == 0 ? -0.6 : 0.6);
+
+      final leafRect = Rect.fromCenter(
+        center: Offset.zero,
+        width: 12,
+        height: 6,
+      );
+      canvas.drawOval(leafRect, leafPaint);
+      canvas.restore();
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LeafPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.leafCount != leafCount;
+  }
+}
+
+// ==================== ПЛАШКА ПЕРЕСАДКИ ====================
+class _RepotSheet extends StatefulWidget {
+  final String baseUrl;
+  final List<dynamic> pots;
+  final dynamic currentPotId;
+  final Duration? Function() getCooldown;
+  final String Function(Duration) formatCooldown;
+
+  const _RepotSheet({
+    required this.baseUrl,
+    required this.pots,
+    required this.currentPotId,
+    required this.getCooldown,
+    required this.formatCooldown,
+  });
+
+  @override
+  State<_RepotSheet> createState() => _RepotSheetState();
+}
+
+class _RepotSheetState extends State<_RepotSheet> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  String _getRussianColor(String color) {
+    switch (color.toLowerCase()) {
+      case 'brown':
+        return 'Коричневый';
+      case 'yellow':
+        return 'Жёлтый';
+      case 'pink':
+        return 'Розовый';
+      default:
+        return color;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cooldown = widget.getCooldown();
+    final canRepot = cooldown == null;
+
+    return SingleChildScrollView(
+      child: Container(
+        margin: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(30),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Выберите горшок',
+              style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF5D3A1A)),
+            ),
+            const SizedBox(height: 20),
+            Wrap(
+              spacing: 16,
+              runSpacing: 16,
+              children: widget.pots.map((pot) {
+                final isSelected = widget.currentPotId == pot['id'];
+
+                String imageUrl = '';
+                if (pot['image'] != null &&
+                    pot['image'].toString().isNotEmpty) {
+                  String img = pot['image'].toString();
+                  if (img.startsWith('http')) {
+                    imageUrl = img;
+                  } else if (img.startsWith('/media/')) {
+                    imageUrl = '${widget.baseUrl}$img';
+                  } else {
+                    imageUrl = '${widget.baseUrl}/media/$img';
+                  }
+                }
+
+                return GestureDetector(
+                  onTap: canRepot
+                      ? () => Navigator.pop(context, pot['id'])
+                      : null,
+                  child: Opacity(
+                    opacity: canRepot ? 1.0 : 0.4,
+                    child: Container(
+                      width: 100,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? Colors.green.withOpacity(0.2)
+                            : Colors.grey.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
+                        border: isSelected
+                            ? Border.all(color: Colors.green, width: 2)
+                            : null,
+                      ),
+                      child: Column(
+                        children: [
+                          Container(
+                            width: 70,
+                            height: 70,
+                            decoration: BoxDecoration(
+                              color: Colors.transparent,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(13),
+                              child: imageUrl.isNotEmpty
+                                  ? Image.network(
+                                      imageUrl,
+                                      fit: BoxFit.contain,
+                                      width: 70,
+                                      height: 70,
+                                      loadingBuilder: (context, child,
+                                          loadingProgress) {
+                                        if (loadingProgress == null) {
+                                          return child;
+                                        }
+                                        return Container(
+                                          color: Colors.transparent,
+                                          child: const Center(
+                                            child: SizedBox(
+                                              width: 30,
+                                              height: 30,
+                                              child:
+                                                  CircularProgressIndicator(
+                                                      strokeWidth: 2),
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                      errorBuilder:
+                                          (context, error, stackTrace) {
+                                        return Container(
+                                          color:
+                                              Colors.brown.withOpacity(0.3),
+                                          child: const Icon(Icons.grass,
+                                              size: 40,
+                                              color: Colors.brown),
+                                        );
+                                      },
+                                    )
+                                  : Container(
+                                      color: Colors.brown.withOpacity(0.3),
+                                      child: const Icon(Icons.grass,
+                                          size: 40, color: Colors.brown),
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _getRussianColor(pot['color'] ?? 'Горшок'),
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color:
+                                  isSelected ? Colors.green : Colors.brown,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 16),
+
+            if (!canRepot && cooldown != null)
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFB8453C).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.timer,
+                        color: Color(0xFFB8453C), size: 18),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Пересадка ${widget.formatCooldown(cooldown).toLowerCase()}',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: Color.fromARGB(255, 113, 71, 34),
+                      ),
+                    )
+                  ],
+                ),
+              )
+            else
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2E7D32).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.check_circle,
+                        color: Color(0xFF2E7D32), size: 18),
+                    SizedBox(width: 6),
+                    Text(
+                      'Можно пересадить (+3 монеты)',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF2E7D32),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, null),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+              child: const Text('Отмена'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ==================== АНИМАЦИЯ ЛЕТЯЩЕЙ МОНЕТКИ ====================
+class _FlyingCoin extends StatefulWidget {
+  final Offset start;
+  final Offset end;
+  final VoidCallback onDone;
+
+  const _FlyingCoin({
+    required this.start,
+    required this.end,
+    required this.onDone,
+  });
+
+  @override
+  State<_FlyingCoin> createState() => _FlyingCoinState();
+}
+
+class _FlyingCoinState extends State<_FlyingCoin>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _t;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
+    _t = CurvedAnimation(parent: _controller, curve: Curves.easeInOut);
+    _controller.forward().whenComplete(() {
+      if (mounted) {
+        widget.onDone();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _t,
+      builder: (context, child) {
+        final pos = Offset.lerp(widget.start, widget.end, _t.value)!;
+        final arc = -60 * (1 - (2 * _t.value - 1).abs());
+        return Positioned(
+          left: pos.dx - 16,
+          top: pos.dy - 16 + arc,
+          child: Opacity(
+            opacity: (1 - _t.value).clamp(0.0, 1.0),
+            child: Transform.scale(
+              scale: (1 - _t.value * 0.5).clamp(0.0, 1.0),
+              child: Image.asset(
+                'assets/images/achievements/coins.png',
+                width: 32,
+                height: 32,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.monetization_on,
+                  color: Colors.amber,
+                  size: 32,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
