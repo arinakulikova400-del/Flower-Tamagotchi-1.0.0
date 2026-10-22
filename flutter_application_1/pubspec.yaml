@@ -31,7 +31,8 @@ flutter:
     - assets/animations/
     - assets/images/
     - assets/images/achievements/
-    - assets/images/fertilizers/   
+    - assets/images/fertilizers/
+    - assets/pots/   
 flutter_launcher_icons:
   image_path: "assets/icon.png"
   android: true
