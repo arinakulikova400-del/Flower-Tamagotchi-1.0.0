@@ -149,7 +149,17 @@ class _GardenScreenState extends State<GardenScreen> {
   }
 
   // ==================== ПОКУПКА УДОБРЕНИЯ ====================
-  Future<void> _buyFertilizer(Fertilizer fert) async {
+    Future<void> _buyFertilizer(Fertilizer fert) async {
+    // 👇 НЕЛЬЗЯ КУПИТЬ БЕЗ ЦВЕТКА
+    if (_flower == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Сначала посадите цветок!'),
+            backgroundColor: Color.fromARGB(255, 184, 69, 60)),
+      );
+      return;
+    }
+
     if (_coins < fert.price) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -158,6 +168,7 @@ class _GardenScreenState extends State<GardenScreen> {
       );
       return;
     }
+
 
     setState(() {
       _coins -= fert.price;
@@ -708,7 +719,7 @@ class _GardenScreenState extends State<GardenScreen> {
     setState(() => _isLoading = false);
   }
 
-  Future<void> _checkDailyLogin() async {
+    Future<void> _checkDailyLogin() async {
     final today = LocalStorage.todayString();
     final yesterday = LocalStorage.yesterdayString();
     final lastDate = await LocalStorage.loadLastLoginDate();
@@ -716,10 +727,12 @@ class _GardenScreenState extends State<GardenScreen> {
 
     int newStreak;
     int reward;
+    bool showDialog = false; // 👈 показываем только при новом входе
 
     if (lastDate == today) {
       newStreak = streak;
       reward = _calculateDailyReward(streak);
+      // showDialog остаётся false — уже заходили сегодня
     } else if (lastDate == yesterday) {
       newStreak = streak + 1;
       reward = _calculateDailyReward(newStreak);
@@ -727,6 +740,7 @@ class _GardenScreenState extends State<GardenScreen> {
       await LocalStorage.saveCoins(_coins);
       await LocalStorage.saveDailyStreak(newStreak);
       await LocalStorage.saveLastLoginDate(today);
+      showDialog = true;
     } else {
       newStreak = 1;
       reward = _calculateDailyReward(1);
@@ -734,12 +748,13 @@ class _GardenScreenState extends State<GardenScreen> {
       await LocalStorage.saveCoins(_coins);
       await LocalStorage.saveDailyStreak(newStreak);
       await LocalStorage.saveLastLoginDate(today);
+      showDialog = true;
     }
 
     setState(() {
       _dailyStreak = newStreak;
       _dailyReward = reward;
-      _showDailyLoginDialog = true;
+      _showDailyLoginDialog = showDialog; // 👈 было true
     });
   }
 
@@ -974,7 +989,18 @@ class _GardenScreenState extends State<GardenScreen> {
       ),
     );
 
-    if (potId != null) {
+        if (potId != null) {
+          if (!mounted) return;
+      // 👇 ПОВТОРНАЯ ПРОВЕРКА МОНЕТ (на случай, если баланс изменился)
+      if (_coins < price) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Недостаточно монет!'),
+              backgroundColor: Color.fromARGB(255, 184, 69, 60)),
+        );
+        return;
+      }
+
       final newFlower = {
         'id': DateTime.now().millisecondsSinceEpoch,
         'name': 'Мой цветок',
@@ -1045,7 +1071,7 @@ class _GardenScreenState extends State<GardenScreen> {
       final lastUpdate = DateTime.tryParse(_flower!['last_state_update'] ?? '') ?? DateTime.now();
       final hoursPassed = DateTime.now().difference(lastUpdate).inMinutes / 60.0;
 
-      if (hoursPassed < 0.1) {
+      if (hoursPassed < 0.05) {
         _isUpdatingFlower = false;
         return;
       }
@@ -1204,47 +1230,47 @@ class _GardenScreenState extends State<GardenScreen> {
     if (flowerType == 'monstera') {
       switch (stage) {
         case 'seed':
-          return -15;
+          return -20;
         case 'sprout':
-          return 20;
+          return 6;
         case 'growing':
-          return 25;
+          return 12;
         case 'mature':
-          return 30;
+          return 5;
         case 'flowering':
-          return 80;
+          return 58;
         default:
-          return 50;
+          return 55;
       }
     } else if (flowerType == 'orchid') {
       switch (stage) {
         case 'seed':
-          return 0;
+          return -20;
         case 'sprout':
-          return 10;
+          return -7;
         case 'growing':
-          return 25;
+          return 10;
         case 'mature':
-          return 30;
+          return 12;
         case 'flowering':
-          return 30;
+          return 12;
         default:
-          return 30;
+          return 12;
       }
     } else {
       switch (stage) {
         case 'seed':
-          return 10;
+          return -25;
         case 'sprout':
-          return 0;
+          return 10;
         case 'growing':
-          return 20;
+          return 15;
         case 'mature':
-          return 28;
+          return 20;
         case 'flowering':
-          return 28;
+          return 15;
         default:
-          return 28;
+          return 15;
       }
     }
   }
@@ -1269,12 +1295,21 @@ class _GardenScreenState extends State<GardenScreen> {
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
 
+    // 👇 1. ОПРЕДЕЛЯЕМ ТИП УСТРОЙСТВА (телефон или планшет)
     final isPhone = screenWidth < 600;
-    final containerSize = screenWidth * 0.8;
-    final potWidth = screenWidth * 0.65;
+    final isTablet = screenWidth >= 600;
+
+    // 👇 2. ЗАДАЕМ МАКСИМАЛЬНУЮ ШИРИНУ КОНТЕЙНЕРА С ЦВЕТКОМ
+    // На телефоне берем 80% ширины экрана, но не больше 350 пикселей.
+    // На планшете фиксируем на 400 пикселях, чтобы не растягивалось на весь экран.
+    final double baseContainerWidth = isPhone ? (screenWidth * 0.8).clamp(200.0, 350.0) : 400.0;
+    
+    // 👇 3. РАЗМЕРЫ ЦВЕТКА И ГОРШКА (привязаны к контейнеру, а не к экрану)
+    final containerSize = baseContainerWidth;
+    final potWidth = containerSize * 0.75; 
     final potHeight = potWidth * 0.7;
-    final plantSize = screenWidth * 0.45;
-    final scaleFactor = screenHeight / 800;
+    final plantSize = containerSize * 0.6; // 60% от контейнера
+    final scaleFactor = screenHeight / 800; // оставляем для мелкой подстройки по высоте
 
     return GestureDetector(
       onTap: _onSingleTap,
@@ -1319,18 +1354,31 @@ class _GardenScreenState extends State<GardenScreen> {
                       child: const Icon(Icons.grass, color: Colors.brown, size: 40),
                     ),
                   ),
-                Positioned(
+                                Positioned(
                   bottom: isAlive ? _getBottomOffset(stage, flowerType) * scaleFactor : screenHeight * 0.03,
-                  child: Image.asset(
-                    'assets/plants/$flowerType/${_getStageFileName(stage, flowerType)}',
-                    width: plantSize,
-                    height: plantSize,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => Icon(
-                      Icons.local_florist,
-                      size: plantSize * 0.8,
-                      color: Colors.grey,
-                    ),
+                  child: Builder(
+                    builder: (context) {
+                      // 👇 НОВАЯ ЛОГИКА РАЗМЕРА
+                      double currentSize = plantSize;
+                      final double progress = _getGrowthProgress();
+                      
+                      // Если это монстера и прогресс от 60% до 80% (4-я стадия)
+                      if (flowerType == 'monstera' && progress >= 0.6 && progress < 0.8) {
+                        currentSize = plantSize * 1.6; // 👈 Увеличиваем на 40% (можешь поменять на 1.3 или 1.5)
+                      }
+
+                      return Image.asset(
+                        'assets/plants/$flowerType/${_getStageFileName(stage, flowerType)}',
+                        width: currentSize,
+                        height: currentSize,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => Icon(
+                          Icons.local_florist,
+                          size: currentSize * 0.8,
+                          color: Colors.grey,
+                        ),
+                      );
+                    },
                   ),
                 ),
               ],
@@ -1616,6 +1664,7 @@ class _GardenScreenState extends State<GardenScreen> {
     final isAlive = _isFlowerAlive;
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
+    final isPhone = screenWidth < 600; // 👈 ДОБАВЛЕНО СЮДА (исправление ошибки)
 
     return Scaffold(
       body: Stack(
@@ -1745,7 +1794,7 @@ class _GardenScreenState extends State<GardenScreen> {
                                         fontSize: 18,
                                         fontWeight: FontWeight.w500,
                                         color: Color(0xFF5D3A1A),
-                                        height: 1, // Уменьшили межстрочный интервал
+                                        height: 1, 
                                       ),
                                     ),
                                   ),
@@ -1753,19 +1802,24 @@ class _GardenScreenState extends State<GardenScreen> {
                               )
                             : Stack(
                                 children: [
-                                  Positioned(
-                                    top: screenHeight * 0.05,
-                                    left: screenWidth * 0.1,
-                                    child: _buildPlantImage(),
+                                                                    Positioned(
+                                    top: screenHeight * 0.08, // чуть опустим
+                                    left: 0,
+                                    right: 0,
+                                    child: Center( // 👈 Центрируем контейнер на любом экране
+                                      child: _buildPlantImage(),
+                                    ),
                                   ),
                                   Positioned(
                                     bottom: 2,
                                     left: 0,
                                     right: 0,
                                     child: Center(
-                                      child: Container(
+                                                                            child: Container(
                                         width: screenWidth * 0.95,
+                                        constraints: const BoxConstraints(maxWidth: 600), // 👈 Ограничиваем ширину на планшетах
                                         padding: const EdgeInsets.all(16),
+                                        // ...
                                         decoration: BoxDecoration(
                                           color: Colors.white.withOpacity(0.6),
                                           borderRadius: BorderRadius.circular(30),
@@ -1780,25 +1834,39 @@ class _GardenScreenState extends State<GardenScreen> {
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
+                                                                                        // 👇 НАЗВАНИЕ И СОРТ В ОДНУ СТРОКУ (с защитой от переполнения)
+                                                                                        // 👇 НАЗВАНИЕ И СОРТ В ОДНУ СТРОКУ (без точки)
                                             Center(
-                                              child: Text(
-                                                _getDisplayFlowerName(),
-                                                style: const TextStyle(
-                                                    fontSize: 26, // 👈 Увеличили
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Colors.black),
+                                              child: FittedBox(
+                                                fit: BoxFit.scaleDown,
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                                                  textBaseline: TextBaseline.alphabetic,
+                                                  children: [
+                                                    Text(
+                                                      _getDisplayFlowerName(),
+                                                      style: TextStyle(
+                                                        fontSize: isPhone ? 18.0 : 22.0,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: Colors.black,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 8), // 👈 Точку убрали, оставили отступ
+                                                    Text(
+                                                      _getDisplayFlowerType(),
+                                                      style: TextStyle(
+                                                        fontSize: isPhone ? 16.0 : 18.0, // 👈 Вид сделали крупнее (было 14/16)
+                                                        fontWeight: FontWeight.w500,
+                                                        color: const Color.fromARGB(210, 0, 0, 0),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
                                               ),
                                             ),
-                                            const SizedBox(height: 4),
-                                            Center(
-                                              child: Text(
-                                                _getDisplayFlowerType(),
-                                                style: const TextStyle(
-                                                    fontSize: 18, // 👈 Увеличили
-                                                    fontWeight: FontWeight.w500,
-                                                    color: Colors.black87),
-                                              ),
-                                            ),
+                                          
+                                            const SizedBox(height: 12), // 👈 Отступ вниз до прогресс-баров
                                             if (!isAlive)
                                               Container(
                                                 margin: const EdgeInsets.only(top: 8),
@@ -2082,9 +2150,15 @@ class _GardenScreenState extends State<GardenScreen> {
             ),
         ],
       ),
-      floatingActionButton: _flower != null && !_showFertilizerShop && !_showDailyLoginDialog
+            floatingActionButton: _flower != null && !_showFertilizerShop && !_showDailyLoginDialog
           ? Padding(
-              padding: const EdgeInsets.only(left: 30, right: 10, bottom: 400),
+              // 👇 Убираем bottom: 400. Теперь отступ будет зависеть от высоты экрана.
+              // На телефоне это ~55% высоты, на планшете (где экран больше) кнопки будут выше.
+              padding: EdgeInsets.only(
+                left: screenWidth * 0.05, 
+                right: screenWidth * 0.05, 
+                bottom: screenHeight * 0.35, // 👈 Подбери это значение (0.3 - 0.4), чтобы кнопки стояли ровно над панелью
+              ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -2130,9 +2204,11 @@ class _GardenScreenState extends State<GardenScreen> {
               ),
             )
           : null,
-    );
-  }
-}
+          );        // 👈 закрывает Scaffold(
+  }           // 👈 закрывает метод build
+}             // 👈 закрывает класс _GardenScreenState
+
+
 
 // ==================== КЛАСС ДОСТИЖЕНИЯ ====================
 enum AchievementType { flower, water, collection, growth }

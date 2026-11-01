@@ -205,7 +205,7 @@ class UserFlower(models.Model):
         if hours_passed <= 0:
             return self
 
-        # УМЕНЬШЕНИЕ ВОДЫ — ровно 50% за 24 часа
+        # УМЕНЬШЕНИЕ ВОДЫ — ровно 25% за 24 часа
         water_decrease = hours_passed * 1.041
         self.water_level = max(0, self.water_level - water_decrease)
 
